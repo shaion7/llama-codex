@@ -1,0 +1,94 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: gpu-smoke-test-v7
+  namespace: training
+spec:
+  backoffLimit: 0 
+  template:
+    metadata:
+      labels:
+        app: smoke-test
+      annotations:
+        sidecar.istio.io/inject: "true"
+    spec:
+      runtimeClassName: nvidia
+      restartPolicy: Never
+      containers:
+        - name: training-container
+          # Updated to v8 containing the new script
+          image: registry.local:80/docker-local/smoke-test:v7
+          imagePullPolicy: Always
+          resources:
+            limits:
+              nvidia.com/gpu: 1
+              memory: "8Gi"
+              cpu: "4"
+          env:
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            # --- MLflow & MinIO ---
+            - name: MLFLOW_TRACKING_URI
+              value: "http://mlflow.mlflow.svc.cluster.local:5000"
+            - name: MLFLOW_S3_ENDPOINT_URL
+              value: "http://minio.mlflow.svc.cluster.local:9000"
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: mlflow-minio-secrets
+                  key: AWS_ACCESS_KEY_ID
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: mlflow-minio-secrets
+                  key: AWS_SECRET_ACCESS_KEY
+            # --- Artifactory ---
+            - name: ARTIFACTORY_URL
+              value: "http://artifactory.artifactory.svc.cluster.local:8081/artifactory"
+            - name: ARTIFACTORY_REPO
+              value: "generic-local"
+            - name: ARTIFACTORY_USER
+              valueFrom:
+                secretKeyRef:
+                  name: artifactory-secrets
+                  key: ARTIFACTORY_USER
+            - name: ARTIFACTORY_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: artifactory-secrets
+                  key: ARTIFACTORY_PASSWORD
+            # --- Hugging Face ---
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-secret
+                  key: HF_TOKEN
+          
+          volumeMounts:
+            # 1. SHARED MEMORY (PyTorch requirement)
+            - mountPath: /dev/shm
+              name: dshm
+            
+            # 2. OUTPUTS (Checkpoints - 50GB, Write-Heavy)
+            - mountPath: /workspace/checkpoints
+              name: checkpoints-vol
+
+            # 3. INPUTS (Base Model Cache - 20GB, Read-Heavy)
+            - mountPath: /model-cache
+              name: cache-vol
+
+      volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: "2Gi"
+            
+        # Volume A: The 50GB Checkpoints Drive
+        - name: checkpoints-vol
+          persistentVolumeClaim:
+            claimName: training-checkpoints-pvc
+            
+        # Volume B: The 20GB Model Cache Drive
+        - name: cache-vol
+          persistentVolumeClaim:
+            claimName: model-cache-pvc
